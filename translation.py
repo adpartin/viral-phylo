@@ -1,53 +1,53 @@
 # Based on https://huggingface.co/Rostlab/ProstT5
+# AA-->3Di translation (folding)
 
 import os
 import re
 import torch
 from transformers import T5Tokenizer, AutoModelForSeq2SeqLM
-# from transformers import TRANSFORMERS_CACHE # for caching models
 
 cuda_device = "cuda:0"
+model_name = "Rostlab/ProstT5"
+
 # Set device (use GPU if available)
 device = torch.device(cuda_device if torch.cuda.is_available() else 'cpu')
 
-# Check cache location
-# cache_dir = os.environ.get('HF_HOME', os.path.expanduser('~/.cache/huggingface'))
-# print(f"Model cache directory: {cache_dir}/hub/models--Rostlab--ProstT5/")
-
 # Load tokenizer and model
-tokenizer = T5Tokenizer.from_pretrained('Rostlab/ProstT5', do_lower_case=False)
+tokenizer = T5Tokenizer.from_pretrained(model_name, do_lower_case=False)
 # model = AutoModelForSeq2SeqLM.from_pretrained("Rostlab/ProstT5").to(device)
 model = AutoModelForSeq2SeqLM.from_pretrained(
-    "Rostlab/ProstT5",
+    model_name,
     use_safetensors=True  # Force safetensors format (avoids torch version restriction)
 ).to(device)
 
-# Use half-precision on GPU for efficiency (V100 supports fp16 well)
+# Use half-precision on GPU for efficiency (V100 supports fp16)
 if device.type == 'cuda':
     model.half()
 else:
     model.full()
 
-# Example AA sequences (uppercase, replace rare AAs with X)
-folding_examples = ["PRTEINO", "SEQWENCE"]
-min_len = min(len(s) for s in folding_examples)
-max_len = max(len(s) for s in folding_examples)
+# Prepare protein (AA) sequences as a list.
+# AA sequences are expected to be upper-case ("PRTEINO" below)
+# 3Di sequences need to be lower-case.
+sequences = ["PRTEINO", "SEQWENCE"]
+min_len = min(len(s) for s in sequences)
+max_len = max(len(s) for s in sequences)
 
-# Preprocess: add spaces between residues
-folding_examples = [" ".join(list(re.sub(r"[UZOB]", "X", seq))) for seq in folding_examples]
+# Replace all rare/ambiguous AAs with X (3Di sequences do not have those) and insert whitespace between all sequences (AAs and 3Di)
+sequences = [" ".join(list(re.sub(r"[UZOB]", "X", seq))) for seq in sequences]
 
-# Add prefix for AA to 3Di translation
-folding_examples = ["<AA2fold> " + s for s in folding_examples]
+# Add pre-fix for AA to 3Di translation
+sequences = [ "<AA2fold>" + " " + s for s in sequences]
 
-# Tokenize
+# Tokenize sequences and pad up to the longest sequence in the batch
 ids = tokenizer.batch_encode_plus(
-    folding_examples,
+    sequences,
     add_special_tokens=True,
     padding="longest",
     return_tensors='pt'
 ).to(device)
 
-# Generation hyperparameters (tuned for diversity and quality)
+# Generation configuration for AA-->3Di translation (folding)
 gen_kwargs = {
     "do_sample": True,
     "num_beams": 3,
@@ -59,20 +59,20 @@ gen_kwargs = {
 
 # Translate from AA to 3Di (AA-->3Di) (folding)
 # with torch.no_grad():
-with torch.inference_mode():  # Provides a small speedup on GPU as opposed to torch.no_grad()
+with torch.inference_mode():  # a small speedup on GPU as opposed to torch.no_grad()
     translations = model.generate(
         ids.input_ids,
         attention_mask=ids.attention_mask,
-        max_length=max_len,
-        min_length=min_len,
-        early_stopping=True,
-        num_return_sequences=1,
+        max_length=max_len,     # max length of generated text
+        min_length=min_len,     # min length of generated text
+        early_stopping=True,    # stop early if end-of-text token is generated
+        num_return_sequences=1, # return only a single sequence
         **gen_kwargs
     )
 
-# Decode and remove spaces
+# Decode and remove whitespace between tokens
 decoded_translations = tokenizer.batch_decode(translations, skip_special_tokens=True)
-structure_sequences = ["".join(ts.split(" ")) for ts in decoded_translations]
+structure_sequences = ["".join(ts.split(" ")) for ts in decoded_translations] # predicted 3Di strings
 
 print("Predicted 3Di sequences:", structure_sequences)
 print(f'\n✅ Finished {os.path.basename(__file__)}')
